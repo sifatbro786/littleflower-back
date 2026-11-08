@@ -71,7 +71,7 @@ export const SETTINGS = {
             officeHours: "",
         },
         social: {
-            facebook: "",
+            facebook: "https://www.facebook.com/LittleFlowerInternationalEnglishMediumSchool",
             youtube: "",
         },
     },
