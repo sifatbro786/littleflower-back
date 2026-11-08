@@ -1,0 +1,1102 @@
+// School platform (STR Solutions; first built for Greendale, this install: Little Flower) — Prisma schema (PRD §8)
+//
+// Conventions
+// - ids: UUID v7 (time ordered, good index locality). Exceptions: Setting and Counter use their key as PK.
+// - timestamps: timestamptz(3). Calendar dates (attendance, holidays, dob, paidOn): DATE in Asia/Dhaka,
+//   always computed by the API from the Dhaka wall clock, never from a UTC timestamp.
+// - money: integer taka (Int). Never Float/Decimal for money.
+// - image refs stored as Json: { path, alt, width?, height?, thumbPath? }; path is relative to UPLOAD_DIR.
+// - append-only logs (AuditLog, RefreshToken, …) have no updatedAt.
+// - one database per school; nothing school specific lives here.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum StaffGroup {
+  TEACHER
+  OFFICE
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum StudentStatus {
+  ACTIVE
+  INACTIVE
+  TRANSFERRED
+  GRADUATED
+}
+
+enum ClassStage {
+  EARLY
+  PRIMARY
+  SECONDARY
+}
+
+enum GradingMode {
+  MARKS
+  REMARKS
+}
+
+enum Tone {
+  CORAL
+  SUN
+  SKY
+  BRAND
+}
+
+enum ExamStatus {
+  DRAFT
+  MARKS_OPEN
+  LOCKED
+  PUBLISHED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+}
+
+enum Weekday {
+  SAT
+  SUN
+  MON
+  TUE
+  WED
+  THU
+  FRI
+}
+
+enum FeeHeadType {
+  MONTHLY
+  ONE_TIME
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  BKASH
+  NAGAD
+  ROCKET
+  CARD
+}
+
+enum PaymentChannel {
+  COUNTER
+  ONLINE
+}
+
+enum PaymentIntentStatus {
+  INITIATED
+  PAID
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum PageSection {
+  ABOUT
+  ACADEMICS
+  ADMISSION
+  LEGAL
+}
+
+enum NoticeCategory {
+  GENERAL
+  ADMISSION
+  EXAM
+  HOLIDAY
+  EVENT
+}
+
+/// PUBLIC = website + portal + staff, ALL = portal + staff (not on website), STAFF = staff only, CLASS = one class (portal) + staff
+enum NoticeAudience {
+  PUBLIC
+  ALL
+  STAFF
+  CLASS
+}
+
+enum VideoKind {
+  FILE
+  YOUTUBE
+}
+
+enum Orientation {
+  LANDSCAPE
+  PORTRAIT
+}
+
+enum DownloadKind {
+  ROUTINE
+  SYLLABUS
+  EXAM_SCHEDULE
+  FORM
+}
+
+enum SmsType {
+  ABSENT
+  FEE_DUE
+  RESULT
+  ADMISSION
+  CUSTOM
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+}
+
+enum DocumentKind {
+  ADMIT_CARD
+  ID_CARD
+  MARKSHEET
+  TABULATION
+  RECEIPT
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+}
+
+// ─────────────────────── Auth, users, roles ───────────────────────
+
+model Role {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  /// Natural key used by seed and code: SUPER_ADMIN, ADMIN, OFFICE, ACCOUNTANT, TEACHER, STUDENT
+  key         String   @unique
+  name        String
+  description String?
+  permissions String[]
+  /// System roles cannot be deleted or renamed (custom roles can)
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  users User[]
+}
+
+model User {
+  id                 String     @id @default(uuid(7)) @db.Uuid
+  name               String
+  /// Stored lowercased by the service (login is case-insensitive)
+  email              String?    @unique
+  /// Normalised 01XXXXXXXXX by the service
+  phone              String?    @unique
+  /// Portal login = studentUid lowercased
+  username           String?    @unique
+  passwordHash       String
+  roleId             String     @db.Uuid
+  status             UserStatus @default(ACTIVE)
+  mustChangePassword Boolean    @default(false)
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?  @db.Timestamptz(3)
+  lastLoginAt        DateTime?  @db.Timestamptz(3)
+  passwordChangedAt  DateTime?  @db.Timestamptz(3)
+  createdAt          DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime   @updatedAt @db.Timestamptz(3)
+
+  role                Role                 @relation(fields: [roleId], references: [id])
+  staff               Staff?
+  student             Student?
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  marksEntered        Mark[]
+  attendanceTaken     Attendance[]
+  paymentsCollected   Payment[]
+  paymentReversals    PaymentReversal[]
+  auditLogs           AuditLog[]
+
+  @@index([roleId])
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  userId       String    @db.Uuid
+  /// sha256 of the opaque token; the raw token only ever lives in the cookie
+  tokenHash    String    @unique
+  /// All rotations of one login share a family; reuse of a rotated token revokes the family
+  familyId     String    @db.Uuid
+  expiresAt    DateTime  @db.Timestamptz(3)
+  revokedAt    DateTime? @db.Timestamptz(3)
+  replacedById String?   @db.Uuid
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz(3)
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ─────────────────────────── Staff ───────────────────────────
+
+model Staff {
+  id            String     @id @default(uuid(7)) @db.Uuid
+  /// Null for staff shown on the website who have no login
+  userId        String?    @unique @db.Uuid
+  name          String
+  designation   String
+  qualification String?
+  phone         String?
+  email         String?
+  /// Public file (uploads/public/staff/...)
+  photoPath     String?
+  group         StaffGroup @default(TEACHER)
+  showOnWebsite Boolean    @default(false)
+  order         Int        @default(0)
+  joinedAt      DateTime?  @db.Date
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+
+  user           User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  classTeacherOf ClassTeacher[]
+  assignments    TeacherAssignment[]
+  routineSlots   RoutineSlot[]
+
+  @@index([showOnWebsite, order])
+}
+
+// ─────────────────────── Academic structure ───────────────────────
+
+model AcademicSession {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  name      String   @unique
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  /// true or NULL (never false): the unique index then allows exactly one current session
+  isCurrent Boolean? @unique
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  enrollments   Enrollment[]
+  assignments   TeacherAssignment[]
+  classTeachers ClassTeacher[]
+  exams         Exam[]
+  routineSlots  RoutineSlot[]
+  feeStructures FeeStructure[]
+  concessions   StudentConcession[]
+}
+
+model Class {
+  id          String      @id @default(uuid(7)) @db.Uuid
+  slug        String      @unique
+  name        String      @unique
+  /// Promotion maps class order N → N+1
+  order       Int         @unique
+  stage       ClassStage
+  gradingMode GradingMode
+  // website fields (SchoolClass shape)
+  ageHint     String?
+  tone        Tone        @default(BRAND)
+  summary     String?
+  focus       String[]
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+
+  sections      Section[]
+  subjects      Subject[]
+  feeStructures FeeStructure[]
+  notices       Notice[]
+  downloads     Download[]
+}
+
+model Section {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  classId   String   @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  class         Class               @relation(fields: [classId], references: [id])
+  classTeachers ClassTeacher[]
+  enrollments   Enrollment[]
+  assignments   TeacherAssignment[]
+  routineSlots  RoutineSlot[]
+
+  @@unique([classId, name])
+}
+
+/// Class teacher of a section for one session (changes year to year; history kept)
+model ClassTeacher {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  sessionId String   @db.Uuid
+  sectionId String   @db.Uuid
+  staffId   String   @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+  section Section         @relation(fields: [sectionId], references: [id])
+  staff   Staff           @relation(fields: [staffId], references: [id])
+
+  @@unique([sessionId, sectionId])
+  @@index([staffId, sessionId])
+}
+
+model Subject {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  classId   String   @db.Uuid
+  name      String
+  code      String?
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  class        Class               @relation(fields: [classId], references: [id])
+  assignments  TeacherAssignment[]
+  examSubjects ExamSubject[]
+  routineSlots RoutineSlot[]
+
+  @@unique([classId, name])
+}
+
+// ─────────────────────── Students & enrollment ───────────────────────
+
+model Student {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  /// Permanent school id, e.g. LFIS-26001 (prefix from settings). Also the portal username.
+  studentUid     String        @unique
+  name           String
+  dob            DateTime      @db.Date
+  gender         Gender
+  bloodGroup     String?
+  /// Private file (uploads/private/students/...), served via API + X-Accel-Redirect
+  photoPath      String?
+  fatherName     String?
+  motherName     String?
+  guardianName   String?
+  guardianPhone  String
+  guardianPhone2 String?
+  guardianEmail  String?
+  address        String?
+  admissionDate  DateTime?     @db.Date
+  status         StudentStatus @default(ACTIVE)
+  userId         String?       @unique @db.Uuid
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @db.Timestamptz(3)
+
+  user           User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  enrollments    Enrollment[]
+  payments       Payment[]
+  paymentIntents PaymentIntent[]
+  concessions    StudentConcession[]
+
+  /// Siblings share a guardian phone
+  @@index([guardianPhone])
+  @@index([status])
+}
+
+/// One row per student per session. Section, roll and everything yearly hang off this.
+model Enrollment {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  studentId String   @db.Uuid
+  sessionId String   @db.Uuid
+  sectionId String   @db.Uuid
+  roll      Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  student         Student          @relation(fields: [studentId], references: [id])
+  session         AcademicSession  @relation(fields: [sessionId], references: [id])
+  section         Section          @relation(fields: [sectionId], references: [id])
+  marks           Mark[]
+  attendance      Attendance[]
+  invoices        Invoice[]
+  resultSnapshots ResultSnapshot[]
+  resultRemarks   ResultRemark[]
+
+  @@unique([sessionId, sectionId, roll])
+  @@unique([studentId, sessionId])
+  @@index([sectionId, sessionId])
+}
+
+model TeacherAssignment {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  staffId   String   @db.Uuid
+  sectionId String   @db.Uuid
+  subjectId String   @db.Uuid
+  sessionId String   @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  staff   Staff           @relation(fields: [staffId], references: [id])
+  section Section         @relation(fields: [sectionId], references: [id])
+  subject Subject         @relation(fields: [subjectId], references: [id])
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+
+  @@unique([sectionId, subjectId, sessionId])
+  /// "own subjects" scope filter for teachers
+  @@index([staffId, sessionId])
+}
+
+// ─────────────────────── Exams & results ───────────────────────
+
+model Exam {
+  id            String     @id @default(uuid(7)) @db.Uuid
+  sessionId     String     @db.Uuid
+  name          String
+  shortName     String?
+  /// DRAFT → MARKS_OPEN → LOCKED → PUBLISHED. Marks editable only in MARKS_OPEN (service rule).
+  status        ExamStatus @default(DRAFT)
+  startDate     DateTime?  @db.Date
+  endDate       DateTime?  @db.Date
+  publishedAt   DateTime?  @db.Timestamptz(3)
+  publishedById String?    @db.Uuid
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+
+  session  AcademicSession  @relation(fields: [sessionId], references: [id])
+  subjects ExamSubject[]
+  results  ResultSnapshot[]
+  remarks  ResultRemark[]
+
+  @@unique([sessionId, name])
+  @@index([status])
+}
+
+model ExamSubject {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  examId     String    @db.Uuid
+  subjectId  String    @db.Uuid
+  fullMarks  Int
+  passMarks  Int
+  /// Optional split, e.g. [{ key: "written", label: "Written", fullMarks: 70 }, { key: "oral", ... }]
+  components Json?
+  /// Exam schedule shown in the portal
+  examDate   DateTime? @db.Date
+  startTime  String?   @db.Char(5)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+
+  exam    Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id])
+  marks   Mark[]
+
+  @@unique([examId, subjectId])
+}
+
+model Mark {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  enrollmentId  String   @db.Uuid
+  examSubjectId String   @db.Uuid
+  /// NULL when absent or not entered yet. Half marks allowed.
+  obtained      Decimal? @db.Decimal(5, 2)
+  /// Per-component marks keyed like ExamSubject.components: { written: 55, oral: 18 }
+  components    Json?
+  absent        Boolean  @default(false)
+  /// REMARKS classes (Play Group–KG) store the teacher's remark here instead of a number
+  remarks       String?
+  enteredById   String?  @db.Uuid
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  enrollment  Enrollment  @relation(fields: [enrollmentId], references: [id])
+  examSubject ExamSubject @relation(fields: [examSubjectId], references: [id])
+  enteredBy   User?       @relation(fields: [enteredById], references: [id], onDelete: SetNull)
+
+  @@unique([enrollmentId, examSubjectId])
+  @@index([examSubjectId])
+}
+
+model GradeScale {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  /// Lookup rule: highest row with minPercent <= percent (avoids 79.5% falling between 79 and 80)
+  minPercent Int      @unique
+  maxPercent Int
+  grade      String   @unique
+  point      Decimal  @db.Decimal(3, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Class teacher's overall comment on the report card (all classes). Locked with the exam's marks.
+model ResultRemark {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  examId       String   @db.Uuid
+  enrollmentId String   @db.Uuid
+  remark       String
+  enteredById  String?  @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  exam       Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@unique([examId, enrollmentId])
+}
+
+/// Frozen on publish. The portal and public search read only from here, never from Mark.
+model ResultSnapshot {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  examId       String   @db.Uuid
+  enrollmentId String   @db.Uuid
+  total        Decimal  @db.Decimal(7, 2)
+  fullMarks    Int
+  percent      Decimal  @db.Decimal(5, 2)
+  grade        String?
+  gpa          Decimal? @db.Decimal(3, 2)
+  position     Int?
+  isPass       Boolean
+  /// Full marksheet: student, class, roll, per-subject rows, remarks, attendance summary
+  payload      Json
+  publishedAt  DateTime @db.Timestamptz(3)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  exam       Exam       @relation(fields: [examId], references: [id], onDelete: Cascade)
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@unique([examId, enrollmentId])
+  @@index([enrollmentId])
+}
+
+// ─────────────────────── Attendance & routine ───────────────────────
+
+model Attendance {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  enrollmentId String           @db.Uuid
+  /// Asia/Dhaka calendar date
+  date         DateTime         @db.Date
+  status       AttendanceStatus
+  note         String?
+  takenById    String?          @db.Uuid
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+  takenBy    User?      @relation(fields: [takenById], references: [id], onDelete: SetNull)
+
+  @@unique([enrollmentId, date])
+  @@index([date, status])
+}
+
+model Holiday {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  /// One row per day; the admin UI creates a range as several rows
+  date      DateTime @unique @db.Date
+  title     String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model Period {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  number    Int      @unique
+  /// "HH:mm" Asia/Dhaka
+  startTime String   @db.Char(5)
+  endTime   String   @db.Char(5)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  slots RoutineSlot[]
+}
+
+model RoutineSlot {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  sessionId String   @db.Uuid
+  sectionId String   @db.Uuid
+  day       Weekday
+  periodId  String   @db.Uuid
+  subjectId String   @db.Uuid
+  staffId   String?  @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+  section Section         @relation(fields: [sectionId], references: [id])
+  period  Period          @relation(fields: [periodId], references: [id])
+  subject Subject         @relation(fields: [subjectId], references: [id])
+  staff   Staff?          @relation(fields: [staffId], references: [id], onDelete: SetNull)
+
+  /// PRD lists (sectionId, day, periodId); sessionId added so next year's routine does not collide
+  @@unique([sessionId, sectionId, day, periodId])
+  /// No double booking of a teacher
+  @@unique([staffId, day, periodId, sessionId])
+}
+
+// ─────────────────────────── Fees ───────────────────────────
+
+model FeeHead {
+  id        String      @id @default(uuid(7)) @db.Uuid
+  /// Natural key: tuition, admission, session, exam …
+  code      String      @unique
+  name      String
+  type      FeeHeadType
+  order     Int         @default(0)
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime    @updatedAt @db.Timestamptz(3)
+
+  structures  FeeStructure[]
+  invoices    Invoice[]
+  concessions StudentConcession[]
+}
+
+model FeeStructure {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  sessionId String   @db.Uuid
+  classId   String   @db.Uuid
+  feeHeadId String   @db.Uuid
+  amount    Int
+  /// Shown on /academics/fees
+  isPublic  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+  class   Class           @relation(fields: [classId], references: [id])
+  feeHead FeeHead         @relation(fields: [feeHeadId], references: [id])
+
+  @@unique([sessionId, classId, feeHeadId])
+}
+
+/// Standing waiver (sibling, staff child, scholarship). The invoice job turns it into Invoice.discount.
+model StudentConcession {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  studentId   String   @db.Uuid
+  sessionId   String   @db.Uuid
+  feeHeadId   String   @db.Uuid
+  /// Exactly one of percent / amount is set (service rule)
+  percent     Int?
+  amount      Int?
+  reason      String
+  createdById String?  @db.Uuid
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  student Student         @relation(fields: [studentId], references: [id])
+  session AcademicSession @relation(fields: [sessionId], references: [id])
+  feeHead FeeHead         @relation(fields: [feeHeadId], references: [id])
+
+  @@unique([studentId, sessionId, feeHeadId])
+}
+
+/// amount is copied from FeeStructure at generation and never edited.
+/// due = amount - discount - sum(allocations of non-reversed payments)
+model Invoice {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  enrollmentId String    @db.Uuid
+  feeHeadId    String    @db.Uuid
+  /// "YYYY-MM"; for ONE_TIME heads the month it was issued
+  month        String    @db.Char(7)
+  amount       Int
+  discount     Int       @default(0)
+  discountNote String?
+  dueDate      DateTime? @db.Date
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  enrollment  Enrollment   @relation(fields: [enrollmentId], references: [id])
+  feeHead     FeeHead      @relation(fields: [feeHeadId], references: [id])
+  allocations Allocation[]
+
+  @@unique([enrollmentId, feeHeadId, month])
+  @@index([enrollmentId])
+  @@index([month])
+}
+
+/// Never deleted or edited after insert. Cancelling = a PaymentReversal row.
+model Payment {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  /// Gap free per year, e.g. LFIS-2026-00042, from Counter "receipt:2026" inside the payment transaction
+  receiptNo     String         @unique
+  studentId     String         @db.Uuid
+  amount        Int
+  method        PaymentMethod
+  channel       PaymentChannel @default(COUNTER)
+  /// Gateway tran_id; unique so a repeated IPN cannot create a second payment
+  tranId        String?        @unique
+  collectedById String?        @db.Uuid
+  paidAt        DateTime       @default(now()) @db.Timestamptz(3)
+  /// Asia/Dhaka date of paidAt, set by the service; daily collection report groups on this
+  paidOn        DateTime       @db.Date
+  note          String?
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+
+  student     Student          @relation(fields: [studentId], references: [id])
+  collectedBy User?            @relation(fields: [collectedById], references: [id], onDelete: SetNull)
+  allocations Allocation[]
+  reversal    PaymentReversal?
+  intent      PaymentIntent?
+
+  @@index([studentId])
+  @@index([paidOn])
+}
+
+/// Links a payment to invoices. sum(allocations) <= payment.amount; the rest is advance credit.
+model Allocation {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  paymentId String   @db.Uuid
+  invoiceId String   @db.Uuid
+  amount    Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+}
+
+/// One reversal per payment (unique). Its allocations stop counting toward invoices.
+model PaymentReversal {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  paymentId    String   @unique @db.Uuid
+  reason       String
+  reversedById String?  @db.Uuid
+  reversedAt   DateTime @default(now()) @db.Timestamptz(3)
+  reversedOn   DateTime @db.Date
+
+  payment    Payment @relation(fields: [paymentId], references: [id])
+  reversedBy User?   @relation(fields: [reversedById], references: [id], onDelete: SetNull)
+
+  @@index([reversedOn])
+}
+
+/// Online checkout session. Created before the redirect; only the IPN + validation API moves it to PAID.
+model PaymentIntent {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tranId         String              @unique
+  studentId      String              @db.Uuid
+  amount         Int
+  invoiceIds     String[]            @db.Uuid
+  gateway        String              @default("SSLCOMMERZ")
+  status         PaymentIntentStatus @default(INITIATED)
+  valId          String?
+  /// Raw validation response, kept for disputes
+  gatewayPayload Json?
+  paymentId      String?             @unique @db.Uuid
+  initiatedById  String?             @db.Uuid
+  expiresAt      DateTime            @db.Timestamptz(3)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+
+  student Student  @relation(fields: [studentId], references: [id])
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@index([studentId])
+  @@index([status, expiresAt])
+}
+
+/// Row-locked counters (receipt numbers). key e.g. "receipt:2026". No Postgres sequences: they leave gaps.
+model Counter {
+  key       String   @id
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// ─────────────────────────── Website CMS ───────────────────────────
+
+model Banner {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  title     String?
+  subtitle  String?
+  /// { path, alt, width, height, thumbPath? }
+  image     Json
+  linkUrl   String?
+  linkLabel String?
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([isActive, order])
+}
+
+model Page {
+  id          String      @id @default(uuid(7)) @db.Uuid
+  section     PageSection
+  slug        String
+  title       String
+  summary     String
+  cover       Json?
+  /// Sanitised server side (sanitize-html allowlist) before save
+  bodyHtml    String
+  order       Int         @default(0)
+  isPublished Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+
+  @@unique([section, slug])
+}
+
+model Notice {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  slug        String         @unique
+  title       String
+  category    NoticeCategory @default(GENERAL)
+  audience    NoticeAudience @default(PUBLIC)
+  /// Required when audience = CLASS (service rule)
+  classId     String?        @db.Uuid
+  excerpt     String?
+  bodyHtml    String?
+  pdfPath     String?
+  pinned      Boolean        @default(false)
+  /// NULL = draft, future = scheduled
+  publishedAt DateTime?      @db.Timestamptz(3)
+  createdById String?        @db.Uuid
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime       @updatedAt @db.Timestamptz(3)
+
+  class Class? @relation(fields: [classId], references: [id], onDelete: SetNull)
+
+  @@index([publishedAt])
+  @@index([audience, publishedAt])
+}
+
+model NewsPost {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  slug        String    @unique
+  title       String
+  excerpt     String
+  bodyHtml    String
+  cover       Json
+  /// ImageRef[]
+  images      Json?
+  albumId     String?   @db.Uuid
+  /// NULL = draft
+  publishedAt DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  album GalleryAlbum? @relation(fields: [albumId], references: [id], onDelete: SetNull)
+
+  @@index([publishedAt])
+}
+
+model GalleryAlbum {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  slug         String    @unique
+  title        String
+  description  String?
+  date         DateTime? @db.Date
+  coverImageId String?   @unique @db.Uuid
+  isPublished  Boolean   @default(true)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  images     GalleryImage[] @relation("AlbumImages")
+  coverImage GalleryImage?  @relation("AlbumCover", fields: [coverImageId], references: [id], onDelete: SetNull)
+  news       NewsPost[]
+
+  @@index([date])
+}
+
+model GalleryImage {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  albumId   String   @db.Uuid
+  path      String
+  thumbPath String?
+  alt       String   @default("")
+  width     Int?
+  height    Int?
+  order     Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  album   GalleryAlbum  @relation("AlbumImages", fields: [albumId], references: [id], onDelete: Cascade)
+  coverOf GalleryAlbum? @relation("AlbumCover")
+
+  @@index([albumId, order])
+}
+
+model Video {
+  id          String      @id @default(uuid(7)) @db.Uuid
+  title       String
+  kind        VideoKind
+  path        String?
+  posterPath  String?
+  youtubeId   String?
+  orientation Orientation @default(LANDSCAPE)
+  order       Int         @default(0)
+  isPublished Boolean     @default(true)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(3)
+}
+
+model Facility {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  title       String
+  text        String
+  image       Json
+  tone        Tone     @default(BRAND)
+  order       Int      @default(0)
+  isPublished Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Student Corner files: routines, syllabus, exam schedules, forms
+model Download {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  title       String
+  kind        DownloadKind
+  classId     String?      @db.Uuid
+  filePath    String
+  publishedAt DateTime?    @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
+
+  class Class? @relation(fields: [classId], references: [id], onDelete: SetNull)
+
+  @@index([publishedAt])
+}
+
+/// School settings: name, contacts, socials, sms.cutoff, weekly off days, admission steps, enabled modules …
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model ContactMessage {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  name      String
+  phone     String?
+  email     String?
+  subject   String?
+  message   String
+  ip        String?
+  readAt    DateTime? @db.Timestamptz(3)
+  repliedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+}
+
+// ─────────────────────── Messaging & documents ───────────────────────
+
+model SmsTemplate {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  /// Natural key: absent, fee_due, result …
+  code      String   @unique
+  name      String
+  type      SmsType
+  /// Variables like {student_name}, {due_amount}
+  body      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model SmsLog {
+  id         String        @id @default(uuid(7)) @db.Uuid
+  to         String
+  studentId  String?       @db.Uuid
+  type       SmsType
+  templateId String?       @db.Uuid
+  body       String
+  segments   Int
+  isUnicode  Boolean       @default(false)
+  status     MessageStatus @default(QUEUED)
+  providerId String?
+  error      String?
+  attempts   Int           @default(0)
+  /// Idempotency: "<TYPE>:<studentId>:<refId>", e.g. ABSENT:<id>:2026-11-01. NULL for ad-hoc sends.
+  dedupeKey  String?       @unique
+  sentById   String?       @db.Uuid
+  sentAt     DateTime?     @db.Timestamptz(3)
+  createdAt  DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime      @updatedAt @db.Timestamptz(3)
+
+  @@index([studentId])
+  @@index([createdAt])
+  @@index([status])
+}
+
+model EmailLog {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  to        String
+  subject   String
+  template  String
+  status    MessageStatus @default(QUEUED)
+  messageId String?
+  error     String?
+  attempts  Int           @default(0)
+  sentAt    DateTime?     @db.Timestamptz(3)
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @db.Timestamptz(3)
+
+  @@index([createdAt])
+}
+
+/// PDFs made by the worker (admit/ID cards, marksheets, tabulation, receipts). The UI polls status.
+model GeneratedDocument {
+  id            String       @id @default(uuid(7)) @db.Uuid
+  kind          DocumentKind
+  examId        String?      @db.Uuid
+  sectionId     String?      @db.Uuid
+  enrollmentId  String?      @db.Uuid
+  paymentId     String?      @db.Uuid
+  /// Private file (uploads/private/docs/...)
+  filePath      String?
+  status        JobStatus    @default(QUEUED)
+  error         String?
+  requestedById String?      @db.Uuid
+  readyAt       DateTime?    @db.Timestamptz(3)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@index([kind, examId, sectionId])
+  @@index([enrollmentId, kind])
+}
+
+// ─────────────────────────── Audit ───────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  actorId   String?  @db.Uuid
+  /// e.g. results.publish, payment.reverse, marks.update, role.update, auth.login
+  action    String
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}
