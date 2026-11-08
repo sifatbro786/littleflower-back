@@ -5,7 +5,7 @@
     "description": "Greendale school platform API (Express + PostgreSQL + Prisma + BullMQ)",
     "type": "module",
     "engines": {
-        "node": ">=22.12"
+        "node": ">=24"
     },
     "imports": {
         "#config/*": "./src/config/*",
