@@ -145,7 +145,7 @@ export async function login({ identifier, password, next }, ctx) {
 /**
  * Rotates the refresh token. Returns refreshToken: null on the grace path (the caller keeps the
  * cookie the browser already received from the winning request).
- * @param {string | undefined} raw  gd_rt cookie
+ * @param {string | undefined} raw  <APP_SLUG>_rt cookie
  * @param {AuditCtx} ctx
  */
 export async function refresh(raw, ctx) {

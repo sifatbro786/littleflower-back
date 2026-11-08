@@ -14,6 +14,8 @@ Layout used everywhere (scripts, PM2, Nginx):
 /var/log/littleflower/
 ```
 
+**Sharing a VPS with another school (e.g. Greendale on the STR VPS):** ports, Linux user, database, Redis prefix and folders must all differ. The API already uses 4020 (Greendale 4000). Change the web port from 3000 to a free one (e.g. 3020) in three places: `ecosystem.config.cjs` (`start -p 3020`), `docs/deploy/nginx-littleflower.conf` (`littleflower_web` upstream) and `WEB_INTERNAL_URL` in api/.env. `APP_SLUG=littleflower` keeps Redis keys and cookies apart.
+
 ## 1. Server packages (once per VPS)
 
 1. Swap 2 GB (the VPS has none): `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab`

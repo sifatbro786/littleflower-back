@@ -27,7 +27,7 @@ authRouter.post("/login", loginLimit, validate({ body: loginSchema }), async (re
     ok(res, { user: r.user, redirectTo: r.redirectTo });
 });
 
-/** POST /api/auth/refresh (gd_rt cookie) → { data: { refreshed: true } } + new cookies; 401 clears both cookies */
+/** POST /api/auth/refresh (<APP_SLUG>_rt cookie) → { data: { refreshed: true } } + new cookies; 401 clears both cookies */
 authRouter.post("/refresh", refreshLimit, async (req, res) => {
     try {
         const r = await auth.refresh(req.cookies?.[COOKIE.REFRESH], auditCtx(req));
