@@ -36,7 +36,7 @@ export async function seedBootstrap(prisma) {
     }
 
     // Only one session can be current (isCurrent true|null + unique). Mark this one current only if none is.
-    const current = await prisma.academicSession.findUnique({ where: { isCurrent: true }, select: { id: true } });
+    const current = await prisma.academicSession.findFirst({ where: { isCurrent: true }, select: { id: true } });
     const session = await prisma.academicSession.upsert({
         where: { name: SESSION.name },
         create: { name: SESSION.name, startDate: toDbDate(SESSION.startDate), endDate: toDbDate(SESSION.endDate), isCurrent: current ? null : true },

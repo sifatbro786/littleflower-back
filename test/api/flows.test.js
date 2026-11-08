@@ -117,8 +117,18 @@ describe("attendance rules", () => {
     it("re-saving a day upserts (one row per student per date) and past dates send no SMS", async () => {
         const days = (await sa.get("/api/attendance/dates?n=3")).data;
         const date = days[0]; // oldest of the last three school days: never today
-        const sectionId = (await sa.get("/api/academics/sections")).data[0].value;
-        const sheet = (await sa.get(`/api/attendance/sheet?sectionId=${sectionId}&date=${date}`)).data;
+        // First section that has students (a school can have empty sections, e.g. a medium with no admissions yet).
+        let sectionId;
+        let sheet;
+        for (const s of (await sa.get("/api/academics/sections")).data) {
+            const r = (await sa.get(`/api/attendance/sheet?sectionId=${s.value}&date=${date}`)).data;
+            if (r?.rows?.length) {
+                sectionId = s.value;
+                sheet = r;
+                break;
+            }
+        }
+        assert.ok(sheet, "demo data needs a section with students");
         const entries = sheet.rows.map((r, i) => ({ enrollmentId: r.enrollmentId, status: i === 0 ? "ABSENT" : r.status ?? "PRESENT" }));
         const first = await sa.put("/api/attendance/sheet", { sectionId, date, entries });
         assert.equal(first.status, 200, first.error?.message);

@@ -16,7 +16,9 @@ const dbDate = (s) => new Date(`${s}T00:00:00Z`);
 
 /** @returns {Promise<{ id: string, name: string, startDate: Date, endDate: Date }>} 409 when no session is current */
 export async function getCurrentSession(db = prisma) {
-    const s = await db.academicSession.findUnique({ where: { isCurrent: true }, select: { id: true, name: true, startDate: true, endDate: true } });
+    // findFirst, not findUnique: Prisma batches concurrent findUnique calls into one `{ isCurrent: { in: [...] } }`
+    // query, and Boolean fields have no `in` filter (two cashiers paying at once got a 500). isCurrent is still unique.
+    const s = await db.academicSession.findFirst({ where: { isCurrent: true }, select: { id: true, name: true, startDate: true, endDate: true } });
     if (!s) throw conflict("No academic session is marked as current. Set one in Classes & subjects.");
     return s;
 }
@@ -148,7 +150,7 @@ export async function teacherSections(staffId) {
 export async function createSession(input, ctx) {
     if (await prisma.academicSession.findUnique({ where: { name: input.name }, select: { id: true } })) throw conflict("A session with this name already exists.", { fields: ["name"] });
     const id = await tx(async (t) => {
-        const current = await t.academicSession.findUnique({ where: { isCurrent: true }, select: { id: true } });
+        const current = await t.academicSession.findFirst({ where: { isCurrent: true }, select: { id: true } });
         const s = await t.academicSession.create({ data: { name: input.name, startDate: dbDate(input.startDate), endDate: dbDate(input.endDate), isCurrent: current ? null : true } });
         let copied = 0;
         if (input.copyTeachers && current) {
@@ -353,7 +355,7 @@ export async function reorderSubjects(classId, ids) {
 
 /** For the staff module: removes a deactivated person's current-session class/subject assignments. Returns how many. */
 export async function clearStaffAssignments(staffId, t) {
-    const session = await t.academicSession.findUnique({ where: { isCurrent: true }, select: { id: true } });
+    const session = await t.academicSession.findFirst({ where: { isCurrent: true }, select: { id: true } });
     if (!session) return 0;
     const a = await t.teacherAssignment.deleteMany({ where: { staffId, sessionId: session.id } });
     const c = await t.classTeacher.deleteMany({ where: { staffId, sessionId: session.id } });
