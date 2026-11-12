@@ -14,7 +14,7 @@ export const albums = [
         description: "Honouring our SSC achievers and best students.",
         date: "2026-03-10",
         cover: img.prizeGiving,
-        images: [img.prizeGiving, img.rooftopGathering],
+        images: [img.prizeGiving, img.quranPrizeDay, img.rooftopGathering],
     },
     {
         id: "a-art",

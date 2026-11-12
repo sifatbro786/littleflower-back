@@ -18,6 +18,7 @@ export const img = {
     rooftopGathering: { src: "/images/rooftop-gathering.jpg", width: 1800, height: 1350, alt: "Students and teachers gathered on the school rooftop for a programme" },
     footballTeams: { src: "/images/football-teams.jpg", width: 1800, height: 1350, alt: "Students lined up in football jerseys before a friendly match" },
     rooftopFootball: { src: "/images/rooftop-football.jpg", width: 1350, height: 1800, alt: "A friendly football match on the school rooftop" },
+    quranPrizeDay: { src: "/images/quran-prize-day.jpg", width: 1600, height: 1200, alt: "Students holding the Holy Quran and prizes with their teachers" },
     prizeGiving: { src: "/images/prize-giving.jpg", width: 1600, height: 900, alt: "Guests handing out prizes at the Little Flower prize giving ceremony" },
     artCompetition: { src: "/images/art-competition.jpg", width: 1600, height: 1197, alt: "Students drawing on the rooftop during an art competition" },
     greenColourDay: { src: "/images/green-colour-day.jpg", width: 1600, height: 1200, alt: "Students in green with fruits and leaf crowns on Green Colour Day" },
