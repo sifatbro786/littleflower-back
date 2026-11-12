@@ -14,11 +14,13 @@ Layout used everywhere (scripts, PM2, Nginx):
 /var/log/littleflower/
 ```
 
+How this guide was applied on the STR company VPS (real paths, fixes, demo data): `docs/DEPLOY-STR-VPS.md`.
+
 **Sharing a VPS with another school (e.g. Greendale on the STR VPS):** ports, Linux user, database, Redis prefix and folders must all differ. The API already uses 4020 (Greendale 4000). Change the web port from 3000 to a free one (e.g. 3020) in three places: `ecosystem.config.cjs` (`start -p 3020`), `docs/deploy/nginx-littleflower.conf` (`littleflower_web` upstream) and `WEB_INTERNAL_URL` in api/.env. `APP_SLUG=littleflower` keeps Redis keys and cookies apart.
 
 ## 1. Server packages (once per VPS)
 
-1. Swap 2 GB (the VPS has none): `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab`
+1. Swap 2 GB (skip if `swapon --show` already lists one): `fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab`
 2. PostgreSQL 18 from the PGDG repository (`apt install postgresql-18`). Server timezone may stay UTC: the API computes school dates in Asia/Dhaka.
 3. Redis ≥ 7 (`apt install redis-server`). In `/etc/redis/redis.conf`: `bind 127.0.0.1 -::1`, `maxmemory 128mb`, `maxmemory-policy noeviction`, `requirepass <long random>`. `systemctl restart redis-server`.
 4. Node 24 (already on the VPS) and PM2 (already installed). Nginx 1.24 (already installed), certbot (`apt install certbot python3-certbot-nginx`).
@@ -74,16 +76,28 @@ npm ci --omit=dev
 npx prisma migrate deploy          # never migrate dev / reset / db push on the server
 npm run db:seed                    # bootstrap + website content only; idempotent, never overwrites edits
 npm run check                      # DB, Redis, queue round trip
-pm2 start ecosystem.config.cjs --only littleflower-api,littleflower-worker
+pm2 start /var/www/littleflower/littleflower.config.cjs --only littleflower-api,littleflower-worker
 
 cd /var/www/littleflower/web
 npm ci
 npm run build                      # the API must be running: public pages are prerendered from it
-pm2 start /var/www/littleflower/api/ecosystem.config.cjs --only littleflower-web
-pm2 save && pm2 startup            # survive reboots
+pm2 start /var/www/littleflower/littleflower.config.cjs --only littleflower-web
+pm2 save && pm2 startup            # survive reboots (skip pm2 startup if the VPS already has it)
 ```
 
-Nginx: copy `docs/deploy/nginx-littleflower.conf` to `/etc/nginx/sites-available/littleflower`, set the domain, enable it, `nginx -t && systemctl reload nginx`, then `certbot --nginx -d school.example.com`.
+Run the npm/npx lines as the app user (`sudo -u littleflower -H ...`), never as root. `npm run check` reports the queue as failed until the worker is running; run it again after `pm2 start`.
+
+**PM2 runs the apps as the `littleflower` user.** On a shared VPS the PM2 daemon usually runs as root. Do not use `pm2 start ... --uid littleflower` (PM2 passes the value as a string and fails with `options.uid must be int32`). Create this server-only file once, outside the repo; its name must end in `.config.cjs`, otherwise PM2 runs it as a plain script:
+
+```bash
+cat > /var/www/littleflower/littleflower.config.cjs <<EOF
+// Server-only: runs the repo's PM2 apps as the littleflower user.
+const base = require("/var/www/littleflower/api/ecosystem.config.cjs");
+module.exports = { apps: base.apps.map((app) => ({ ...app, uid: $(id -u littleflower), gid: $(id -g littleflower) })) };
+EOF
+```
+
+Nginx: copy `docs/deploy/nginx-littleflower.conf` to `/etc/nginx/sites-available/littleflower`, set the domain, enable it, `nginx -t && systemctl reload nginx`, then `certbot --nginx -d school.example.com -d www.school.example.com`. Nginx 1.24 needs `listen 443 ssl http2;` (already in the file); the standalone http2 directive fails `nginx -t` before 1.25.1. If a certificate for the domain already exists (e.g. from a coming-soon page), put its `ssl_certificate`, `ssl_certificate_key`, `include /etc/letsencrypt/options-ssl-nginx.conf` and `ssl_dhparam` lines in both 443 blocks instead of running certbot again.
 
 ## 5. Cron (as littleflower, `crontab -e`; times are server time, set `CRON_TZ=Asia/Dhaka` on the first line)
 
@@ -117,9 +131,13 @@ Offsite copy (strongly recommended, the VPS is a single machine): `apt install r
 ## 7. Update a release
 
 ```bash
-cd /var/www/littleflower/api && git pull && npm ci --omit=dev && npx prisma migrate deploy && pm2 reload littleflower-api littleflower-worker
-cd /var/www/littleflower/web && git pull && npm ci && npm run build && pm2 reload littleflower-web
+cd /var/www/littleflower/api && sudo -u littleflower -H sh -c 'git pull && npm ci --omit=dev && npx prisma migrate deploy' \
+  && pm2 reload littleflower-api littleflower-worker
+cd /var/www/littleflower/web && sudo -u littleflower -H sh -c 'git pull && npm ci && npm run build' \
+  && pm2 reload littleflower-web
 ```
+
+On a 1 vCPU VPS `next build` holds the CPU for 3 to 5 minutes and slows the other sites; build at a quiet hour.
 
 Take a backup first when the release has a migration (`scripts/ops/backup.sh`). `prisma migrate deploy` only applies new migrations; it never drops data on its own.
 
